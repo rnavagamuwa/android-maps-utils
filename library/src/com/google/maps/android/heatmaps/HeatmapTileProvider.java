@@ -213,6 +213,10 @@ public class HeatmapTileProvider implements TileProvider {
          */
         public Builder radius(int val) {
             radius = val;
+            // Check that radius is within bounds.
+            if (radius < MIN_RADIUS || radius > MAX_RADIUS) {
+                throw new IllegalArgumentException("Radius not within bounds.");
+            }
             return this;
         }
 
