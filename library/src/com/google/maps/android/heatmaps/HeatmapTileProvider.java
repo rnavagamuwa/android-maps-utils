@@ -111,8 +111,12 @@ public class HeatmapTileProvider implements TileProvider {
     /**
      *  Default value for gradient smoothing.
      */
-
     private static final double DEFAULT_GRADIENT_SMOOTHING = 10;
+
+    /**
+     * Default mode for the heatmap.
+     */
+    private static final HeatmapMode DEFAULT_HEATMAP_MODE = HeatmapMode.POINTS_DENSITY;
 
     /**
      * Quad tree of all the points to display in the heatmap
@@ -170,6 +174,11 @@ public class HeatmapTileProvider implements TileProvider {
     private double mGradientSmoothing;
 
     /**
+     * Heatmap mode which influences how the algorithm drawing heatmap works.
+     */
+    private HeatmapMode mHeatmapMode;
+
+    /**
      * Builder class for the HeatmapTileProvider.
      */
     public static class Builder {
@@ -182,6 +191,7 @@ public class HeatmapTileProvider implements TileProvider {
         private double opacity = DEFAULT_OPACITY;
         private double maxIntensity = 0;
         private double gradientSmoothing = DEFAULT_GRADIENT_SMOOTHING;
+        private HeatmapMode heatmapMode = DEFAULT_HEATMAP_MODE;
 
         /**
          * Constructor for builder.
@@ -273,6 +283,16 @@ public class HeatmapTileProvider implements TileProvider {
             return this;
         }
 
+        public Builder setHeatmapMode(String heatmapMode) {
+            this.heatmapMode = HeatmapMode.valueOf(heatmapMode);
+            return this;
+        }
+
+        public Builder setHeatmapMode(HeatmapMode heatmapMode) {
+            this.heatmapMode = heatmapMode;
+            return this;
+        }
+
         /**
          * Call when all desired options have been set.
          * Note: you must set data using data or weightedData before this!
@@ -300,6 +320,7 @@ public class HeatmapTileProvider implements TileProvider {
 
         staticMaxIntensity = builder.maxIntensity;
         mGradientSmoothing = builder.gradientSmoothing;
+        mHeatmapMode = builder.heatmapMode;
 
         // Compute kernel density function (sd = 1/3rd of radius)
         mKernel = generateKernel(mRadius, mRadius / 3.0);
@@ -481,13 +502,16 @@ public class HeatmapTileProvider implements TileProvider {
             pointsPerBucketCount[bucketX][bucketY] += 1;
         }
 
-        for(int i=0; i<intensity.length; i++) {
-            for(int j=0;j<intensity.length;j++) {
-                if(intensity[i][j] > 0) {
-                    intensity[i][j] /= pointsPerBucketCount[i][j];
+        if(mHeatmapMode == HeatmapMode.POINTS_WEIGHT) {
+            for(int i=0; i<intensity.length; i++) {
+                for(int j=0;j<intensity.length;j++) {
+                    if(intensity[i][j] > 0) {
+                        intensity[i][j] /= pointsPerBucketCount[i][j];
+                    }
                 }
             }
         }
+
 
         // Convolve it ("smoothen" it out)
         HeatmapPoint[][] convolved = convolve(intensity, mKernel);
@@ -545,7 +569,6 @@ public class HeatmapTileProvider implements TileProvider {
     public void setMaxIntensity(double maxIntensity) {
         staticMaxIntensity = maxIntensity;
     }
-
 
 
     /**

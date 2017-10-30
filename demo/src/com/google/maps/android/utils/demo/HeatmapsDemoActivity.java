@@ -17,25 +17,19 @@
 package com.google.maps.android.utils.demo;
 
 import android.graphics.Color;
-import android.graphics.Point;
-import android.util.Log;
 
 import com.google.android.gms.maps.CameraUpdateFactory;
 import com.google.android.gms.maps.GoogleMap;
 import com.google.android.gms.maps.model.LatLng;
 import com.google.android.gms.maps.model.TileOverlay;
 import com.google.android.gms.maps.model.TileOverlayOptions;
-import com.google.maps.android.SphericalUtil;
 import com.google.maps.android.heatmaps.Gradient;
+import com.google.maps.android.heatmaps.HeatmapMode;
 import com.google.maps.android.heatmaps.HeatmapTileProvider;
 import com.google.maps.android.heatmaps.WeightedLatLng;
 
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.concurrent.Executor;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ThreadPoolExecutor;
 
 /**
  * A demo of the Heatmaps library. Demonstrates how the HeatmapTileProvider can be used to create
@@ -55,8 +49,7 @@ public class HeatmapsDemoActivity extends BaseDemoActivity {
     private static final double ALT_HEATMAP_OPACITY = 0.7;
 
     /**
-     * Alternative heatmap gradient (blue -> red)
-     * Copied from Javascript version
+     * Alternative heatmap gradient (green -> red)
      */
     private static final int[] ALT_HEATMAP_GRADIENT_COLORS = {
             Color.parseColor("#79BC6A"),
@@ -76,12 +69,7 @@ public class HeatmapsDemoActivity extends BaseDemoActivity {
 
     private HeatmapTileProvider mProvider;
     private TileOverlay mOverlay;
-
-    private boolean mDefaultGradient = true;
-    private boolean mDefaultRadius = true;
-    private boolean mDefaultOpacity = true;
     private Collection<WeightedLatLng> mData;
-    ExecutorService executorService = Executors.newFixedThreadPool(1);
 
     @Override
     protected int getLayoutId() {
@@ -101,10 +89,11 @@ public class HeatmapsDemoActivity extends BaseDemoActivity {
         if(mProvider == null) {
             mProvider = new HeatmapTileProvider.Builder()
                     .weightedData(mData)
+                    .setHeatmapMode(HeatmapMode.POINTS_WEIGHT)
                     .gradient(ALT_HEATMAP_GRADIENT)
                     .maxIntensity(100)
-                    .radius(300)
-                    .opacity(0.7)
+                    .radius(ALT_HEATMAP_RADIUS)
+                    .opacity(ALT_HEATMAP_OPACITY)
                     .gradientSmoothing(10)
                     .build();
             mOverlay = getMap().addTileOverlay(new TileOverlayOptions().tileProvider(mProvider));
@@ -116,15 +105,9 @@ public class HeatmapsDemoActivity extends BaseDemoActivity {
             public void onCameraMove() {
                 LatLng latLng = getMap().getCameraPosition().target;
                 double metersPerPixel = 156543.03392 * Math.cos(latLng.latitude * Math.PI / 180) / Math.pow(2, getMap().getCameraPosition().zoom);
-                final double result = Math.min(400 / metersPerPixel, 400);
-                Log.d("AAA", "meters per pixel: " + result);
-                executorService.submit(new Runnable() {
-                    @Override
-                    public void run() {
+                final double result = Math.min(ALT_HEATMAP_RADIUS / metersPerPixel, ALT_HEATMAP_RADIUS);
                         mProvider.setRadius((int) result);
                         mOverlay.clearTileCache();
-                    }
-                });
             }
         });
     }
