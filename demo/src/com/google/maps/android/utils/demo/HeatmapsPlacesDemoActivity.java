@@ -38,7 +38,7 @@ import com.google.android.gms.maps.model.TileOverlay;
 import com.google.android.gms.maps.model.TileOverlayOptions;
 import com.google.maps.android.SphericalUtil;
 import com.google.maps.android.heatmaps.Gradient;
-import com.google.maps.android.heatmaps.HeatmapTileProvider;
+import com.google.maps.android.heatmaps.WeightBasedOldHeatmapTileProvider;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -329,7 +329,7 @@ public class HeatmapsPlacesDemoActivity extends BaseDemoActivity {
             if (!points.isEmpty()) {
                 if (mOverlays.size() < MAX_CHECKBOXES) {
                     makeCheckBox(keyword);
-                    HeatmapTileProvider provider = new HeatmapTileProvider.Builder()
+                    WeightBasedOldHeatmapTileProvider provider = new WeightBasedOldHeatmapTileProvider.Builder()
                             .data(new ArrayList<LatLng>(points))
                             .gradient(makeGradient(HEATMAP_COLORS[mOverlaysRendered]))
                             .build();

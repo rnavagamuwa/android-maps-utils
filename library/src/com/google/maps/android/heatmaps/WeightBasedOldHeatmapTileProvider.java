@@ -18,6 +18,7 @@ package com.google.maps.android.heatmaps;
 
 import android.graphics.Bitmap;
 import android.graphics.Color;
+import android.support.v4.graphics.ColorUtils;
 import android.support.v4.util.LongSparseArray;
 
 import com.google.android.gms.maps.model.LatLng;
@@ -35,17 +36,17 @@ import java.util.Iterator;
 /**
  * Tile provider that creates heatmap tiles.
  */
-public class HeatmapTileProvider implements TileProvider {
+public class WeightBasedOldHeatmapTileProvider implements TileProvider {
 
     /**
      * Default radius for convolution
      */
-    public static final int DEFAULT_RADIUS = 20;
+    private static final int DEFAULT_RADIUS = 20;
 
     /**
      * Default opacity of heatmap overlay
      */
-    public static final double DEFAULT_OPACITY = 0.7;
+    private static final double DEFAULT_OPACITY = 0.7;
 
     /**
      * Colors for default gradient.
@@ -68,7 +69,7 @@ public class HeatmapTileProvider implements TileProvider {
     /**
      * Default gradient for heatmap.
      */
-    public static final Gradient DEFAULT_GRADIENT = new Gradient(DEFAULT_GRADIENT_COLORS, DEFAULT_GRADIENT_START_POINTS);
+    private static final Gradient DEFAULT_GRADIENT = new Gradient(DEFAULT_GRADIENT_COLORS, DEFAULT_GRADIENT_START_POINTS);
 
     /**
      * Size of the world (arbitrary).
@@ -108,9 +109,9 @@ public class HeatmapTileProvider implements TileProvider {
     private static final int MIN_RADIUS = 10;
 
     /**
-     * Maximum radius value.
+     * Default value for gradient smoothing.
      */
-    private static final int MAX_RADIUS = 50;
+    private static final double DEFAULT_GRADIENT_SMOOTHING = 10;
 
     /**
      * Quad tree of all the points to display in the heatmap
@@ -158,6 +159,16 @@ public class HeatmapTileProvider implements TileProvider {
     private double[] mMaxIntensity;
 
     /**
+     * Fixed maximum intensity for heatmap.
+     */
+    private double staticMaxIntensity;
+
+    /**
+     * Solid color gradient smoothing.
+     */
+    private double mGradientSmoothing;
+
+    /**
      * Builder class for the HeatmapTileProvider.
      */
     public static class Builder {
@@ -168,6 +179,8 @@ public class HeatmapTileProvider implements TileProvider {
         private int radius = DEFAULT_RADIUS;
         private Gradient gradient = DEFAULT_GRADIENT;
         private double opacity = DEFAULT_OPACITY;
+        private double maxIntensity = 0;
+        private double gradientSmoothing = DEFAULT_GRADIENT_SMOOTHING;
 
         /**
          * Constructor for builder.
@@ -214,7 +227,7 @@ public class HeatmapTileProvider implements TileProvider {
         public Builder radius(int val) {
             radius = val;
             // Check that radius is within bounds.
-            if (radius < MIN_RADIUS || radius > MAX_RADIUS) {
+            if (radius < MIN_RADIUS) {
                 throw new IllegalArgumentException("Radius not within bounds.");
             }
             return this;
@@ -246,30 +259,46 @@ public class HeatmapTileProvider implements TileProvider {
             return this;
         }
 
+        public Builder maxIntensity(double val) {
+            if (val < 0) {
+                throw new IllegalArgumentException("Maximum intensity must be larger than 0.");
+            }
+            maxIntensity = val;
+            return this;
+        }
+
+        public Builder gradientSmoothing(double val) {
+            this.gradientSmoothing = val;
+            return this;
+        }
+
         /**
          * Call when all desired options have been set.
          * Note: you must set data using data or weightedData before this!
          *
          * @return HeatmapTileProvider created with desired options.
          */
-        public HeatmapTileProvider build() {
+        public WeightBasedOldHeatmapTileProvider build() {
             // Check if data or weightedData has been called
             if (data == null) {
                 throw new IllegalStateException("No input data: you must use either .data or " +
                         ".weightedData before building");
             }
 
-            return new HeatmapTileProvider(this);
+            return new WeightBasedOldHeatmapTileProvider(this);
         }
     }
 
-    private HeatmapTileProvider(Builder builder) {
+    private WeightBasedOldHeatmapTileProvider(Builder builder) {
         // Get parameters from builder
         mData = builder.data;
 
         mRadius = builder.radius;
         mGradient = builder.gradient;
         mOpacity = builder.opacity;
+
+        staticMaxIntensity = builder.maxIntensity;
+        mGradientSmoothing = builder.gradientSmoothing;
 
         // Compute kernel density function (sd = 1/3rd of radius)
         mKernel = generateKernel(mRadius, mRadius / 3.0);
@@ -309,7 +338,7 @@ public class HeatmapTileProvider implements TileProvider {
         // Make the quad tree
         mBounds = getBounds(mData);
 
-        mTree = new PointQuadTree<WeightedLatLng>(mBounds);
+        mTree = new PointQuadTree<>(mBounds);
 
         // Add points to quad tree
         for (WeightedLatLng l : mData) {
@@ -393,7 +422,7 @@ public class HeatmapTileProvider implements TileProvider {
         // hence, the else
         // Note: Tile must remain square, so cant optimise by editing bounds
         double xOffset = 0;
-        Collection<WeightedLatLng> wrappedPoints = new ArrayList<WeightedLatLng>();
+        Collection<WeightedLatLng> wrappedPoints = new ArrayList<>();
         if (minX < 0) {
             // Need to consider "negative" points
             // (minX to 0) ->  (512+minX to 512) ie +512
@@ -433,11 +462,14 @@ public class HeatmapTileProvider implements TileProvider {
 
         // Quantize points
         double[][] intensity = new double[TILE_DIM + mRadius * 2][TILE_DIM + mRadius * 2];
+        int[][] pointsPerBucketCount = new int[TILE_DIM + mRadius * 2][TILE_DIM + mRadius * 2];
+
         for (WeightedLatLng w : points) {
             Point p = w.getPoint();
             int bucketX = (int) ((p.x - minX) / bucketWidth);
             int bucketY = (int) ((p.y - minY) / bucketWidth);
             intensity[bucketX][bucketY] += w.getIntensity();
+            pointsPerBucketCount[bucketX][bucketY] += 1;
         }
         // Quantize wraparound points (taking xOffset into account)
         for (WeightedLatLng w : wrappedPoints) {
@@ -445,13 +477,27 @@ public class HeatmapTileProvider implements TileProvider {
             int bucketX = (int) ((p.x + xOffset - minX) / bucketWidth);
             int bucketY = (int) ((p.y - minY) / bucketWidth);
             intensity[bucketX][bucketY] += w.getIntensity();
+            pointsPerBucketCount[bucketX][bucketY] += 1;
+        }
+
+        for (int i = 0; i < intensity.length; i++) {
+            for (int j = 0; j < intensity.length; j++) {
+                if (intensity[i][j] > 0) {
+                    intensity[i][j] /= pointsPerBucketCount[i][j];
+                }
+            }
         }
 
         // Convolve it ("smoothen" it out)
-        double[][] convolved = convolve(intensity, mKernel);
+        HeatmapPoint[][] convolved = convolve(intensity, mKernel);
 
         // Color it into a bitmap
-        Bitmap bitmap = colorize(convolved, mColorMap, mMaxIntensity[zoom]);
+        Bitmap bitmap;
+        if (staticMaxIntensity > 0) {
+            bitmap = colorize(convolved, mColorMap, staticMaxIntensity);
+        } else {
+            bitmap = colorize(convolved, mColorMap, mMaxIntensity[zoom]);
+        }
 
         // Convert bitmap to tile and return
         return convertBitmap(bitmap);
@@ -494,6 +540,12 @@ public class HeatmapTileProvider implements TileProvider {
         setGradient(mGradient);
     }
 
+
+    public void setMaxIntensity(double maxIntensity) {
+        staticMaxIntensity = maxIntensity;
+    }
+
+
     /**
      * Gets array of maximum intensity values to use with the heatmap for each zoom level
      * This is the value that the highest color on the color map corresponds to
@@ -505,19 +557,21 @@ public class HeatmapTileProvider implements TileProvider {
         // Can go from zoom level 3 to zoom level 22
         double[] maxIntensityArray = new double[MAX_ZOOM_LEVEL];
 
-        // Calculate max intensity for each zoom level
-        for (int i = DEFAULT_MIN_ZOOM; i < DEFAULT_MAX_ZOOM; i++) {
-            // Each zoom level multiplies viewable size by 2
-            maxIntensityArray[i] = getMaxValue(mData, mBounds, radius,
-                    (int) (SCREEN_SIZE * Math.pow(2, i - 3)));
-            if (i == DEFAULT_MIN_ZOOM) {
-                for (int j = 0; j < i; j++) maxIntensityArray[j] = maxIntensityArray[i];
+        // Calculate only if there is no static max intensity set
+        if (staticMaxIntensity == 0) {
+            // Calculate max intensity for each zoom level
+            for (int i = DEFAULT_MIN_ZOOM; i < DEFAULT_MAX_ZOOM; i++) {
+                // Each zoom level multiplies viewable size by 2
+                maxIntensityArray[i] = getMaxValue(mData, mBounds, radius,
+                        (int) (SCREEN_SIZE * Math.pow(2, i - 3)));
+                if (i == DEFAULT_MIN_ZOOM) {
+                    for (int j = 0; j < i; j++) maxIntensityArray[j] = maxIntensityArray[i];
+                }
+            }
+            for (int i = DEFAULT_MAX_ZOOM; i < MAX_ZOOM_LEVEL; i++) {
+                maxIntensityArray[i] = maxIntensityArray[DEFAULT_MAX_ZOOM - 1];
             }
         }
-        for (int i = DEFAULT_MAX_ZOOM; i < MAX_ZOOM_LEVEL; i++) {
-            maxIntensityArray[i] = maxIntensityArray[DEFAULT_MAX_ZOOM - 1];
-        }
-
         return maxIntensityArray;
     }
 
@@ -580,7 +634,7 @@ public class HeatmapTileProvider implements TileProvider {
     static double[] generateKernel(int radius, double sd) {
         double[] kernel = new double[radius * 2 + 1];
         for (int i = -radius; i <= radius; i++) {
-            kernel[i + radius] = (Math.exp(-i * i / (2 * sd * sd)));
+            kernel[i + radius] = (Math.exp(-i * i / (3 * sd * sd)));
         }
         return kernel;
     }
@@ -593,7 +647,7 @@ public class HeatmapTileProvider implements TileProvider {
      * @param kernel Pre-computed Gaussian kernel of size radius * 2 + 1
      * @return the smoothened grid
      */
-    static double[][] convolve(double[][] grid, double[] kernel) {
+    private HeatmapPoint[][] convolve(double[][] grid, double[] kernel) {
         // Calculate radius size
         int radius = (int) Math.floor((double) kernel.length / 2.0);
         // Padded dimension
@@ -606,7 +660,7 @@ public class HeatmapTileProvider implements TileProvider {
         int upperLimit = radius + dim - 1;
 
         // Convolve horizontally
-        double[][] intermediate = new double[dimOld][dimOld];
+        HeatmapPoint[][] heatmapPoints = new HeatmapPoint[dimOld][dimOld];
 
         // Need to convolve every point (including those outside of non-padded area)
         // but only need to add to points within non-padded area
@@ -627,14 +681,28 @@ public class HeatmapTileProvider implements TileProvider {
                         // multiplier for x2 = x - radius is kernel[0]
                         // x2 = x + radius is kernel[radius * 2]
                         // so multiplier for x2 in general is kernel[x2 - (x - radius)]
-                        intermediate[x2][y] += val * kernel[x2 - (x - radius)];
+                        double intensityForCurrentPoint = kernel[x2 - (x - radius)];
+
+                        // weight can't go down to 0 when applying smoothing so setting minimum value to 1
+                        double weightForCurrentPoint = Math.max((intensityForCurrentPoint * mGradientSmoothing) + (val - mGradientSmoothing), 1);
+
+                        // only points that will be actually visible on the map
+                        if (intensityForCurrentPoint > 0) {
+                            HeatmapPoint newHeatmapPoint = new HeatmapPoint(intensityForCurrentPoint, weightForCurrentPoint);
+                            if (heatmapPoints[x2][y] == null) {
+                                heatmapPoints[x2][y] = newHeatmapPoint;
+                            } else {
+                                HeatmapPoint oldHeatmapPoint = heatmapPoints[x2][y];
+                                heatmapPoints[x2][y] = mergeHeatmapPoints(oldHeatmapPoint, newHeatmapPoint);
+                            }
+                        }
                     }
                 }
             }
         }
 
         // Convolve vertically
-        double[][] outputGrid = new double[dim][dim];
+        HeatmapPoint[][] outputHeatmapPoints = new HeatmapPoint[dim][dim];
 
         // Similarly, need to convolve every point, but only add to points within non-padded area
         // However, we are adding to a smaller grid here (previously, was to a grid of same size)
@@ -644,9 +712,9 @@ public class HeatmapTileProvider implements TileProvider {
         for (x = lowerLimit; x < upperLimit + 1; x++) {
             for (y = 0; y < dimOld; y++) {
                 // for each point (x, y)
-                val = intermediate[x][y];
+                HeatmapPoint currentHeatmapPoint = heatmapPoints[x][y];
                 // only bother if something there
-                if (val != 0) {
+                if (currentHeatmapPoint != null) {
                     // need to "apply" convolution from that point to every point in
                     // (x, max(lowerLimit, y - radius) to (x, min(upperLimit, y + radius))
                     // Don't care about
@@ -656,13 +724,34 @@ public class HeatmapTileProvider implements TileProvider {
                     for (y2 = initial; y2 < yUpperLimit; y2++) {
                         // Similar logic to above
                         // subtract, as adding to a smaller grid
-                        outputGrid[x - radius][y2 - radius] += val * kernel[y2 - (y - radius)];
+                        double intensityForCurrentPoint = currentHeatmapPoint.intensity * kernel[y2 - (y - radius)];
+                        double weightForCurrentPoint = Math.max((intensityForCurrentPoint * mGradientSmoothing) + (currentHeatmapPoint.weight - mGradientSmoothing), 1);
+
+                        if (intensityForCurrentPoint > 0) {
+                            HeatmapPoint newHeatmapPoint = new HeatmapPoint(intensityForCurrentPoint, weightForCurrentPoint);
+                            if (outputHeatmapPoints[x - radius][y2 - radius] == null) {
+                                outputHeatmapPoints[x - radius][y2 - radius] = newHeatmapPoint;
+                            } else {
+                                HeatmapPoint oldHeatmapPoint = outputHeatmapPoints[x - radius][y2 - radius];
+                                outputHeatmapPoints[x - radius][y2 - radius] = mergeHeatmapPoints(oldHeatmapPoint, newHeatmapPoint);
+                            }
+                        }
                     }
                 }
             }
         }
 
-        return outputGrid;
+        return outputHeatmapPoints;
+    }
+
+    private HeatmapPoint mergeHeatmapPoints(HeatmapPoint heatmapPoint1, HeatmapPoint heatmapPoint2) {
+        double newWeight = weightedAverage(heatmapPoint1.weight, heatmapPoint1.intensity, heatmapPoint2.weight, heatmapPoint2.intensity);
+        double newIntensity = Math.min(heatmapPoint1.intensity + heatmapPoint2.intensity, 1);
+        return new HeatmapPoint(newIntensity, newWeight);
+    }
+
+    private static double weightedAverage(double pointWeight1, double pointIntensity1, double pointWeight2, double pointIntensity2) {
+        return ((pointIntensity1 * pointWeight1) + (pointIntensity2 * pointWeight2)) / (pointIntensity1 + pointIntensity2);
     }
 
     /**
@@ -673,7 +762,7 @@ public class HeatmapTileProvider implements TileProvider {
      * @param max      Maximum intensity value: maps to 100% on gradient
      * @return the colorized grid in Bitmap form, with same dimensions as grid
      */
-    static Bitmap colorize(double[][] grid, int[] colorMap, double max) {
+    private static Bitmap colorize(HeatmapPoint[][] grid, int[] colorMap, double max) {
         // Maximum color value
         int maxColor = colorMap[colorMap.length - 1];
         // Multiplier to "scale" intensity values with, to map to appropriate color
@@ -682,7 +771,7 @@ public class HeatmapTileProvider implements TileProvider {
         int dim = grid.length;
 
         int i, j, index, col;
-        double val;
+        HeatmapPoint point;
         // Array of colors
         int colors[] = new int[dim * dim];
         for (i = 0; i < dim; i++) {
@@ -690,14 +779,17 @@ public class HeatmapTileProvider implements TileProvider {
                 // [x][y]
                 // need to enter each row of x coordinates sequentially (x first)
                 // -> [j][i]
-                val = grid[j][i];
+                point = grid[j][i];
                 index = i * dim + j;
-                col = (int) (val * colorMapScaling);
 
-                if (val != 0) {
+                if (point != null) {
+                    col = (int) (point.weight * colorMapScaling);
+                    int fromColorMap = colorMap[col];
+                    int transparency = (int) (point.intensity * Color.alpha(fromColorMap));
                     // Make it more resilient: cant go outside colorMap
-                    if (col < colorMap.length) colors[index] = colorMap[col];
-                    else colors[index] = maxColor;
+                    if (col < colorMap.length)
+                        colors[index] = ColorUtils.setAlphaComponent(fromColorMap, transparency);
+                    else colors[index] = ColorUtils.setAlphaComponent(maxColor, transparency);
                 } else {
                     colors[index] = Color.TRANSPARENT;
                 }
@@ -720,8 +812,8 @@ public class HeatmapTileProvider implements TileProvider {
      * @param screenDim larger dimension of screen in pixels (for scale)
      * @return Approximate max value
      */
-    static double getMaxValue(Collection<WeightedLatLng> points, Bounds bounds, int radius,
-                              int screenDim) {
+    private static double getMaxValue(Collection<WeightedLatLng> points, Bounds bounds, int radius,
+                                      int screenDim) {
         // Approximate scale as if entire heatmap is on the screen
         // ie scale dimensions to larger of width or height (screenDim)
         double minX = bounds.minX;
@@ -769,5 +861,16 @@ public class HeatmapTileProvider implements TileProvider {
         }
 
         return max;
+    }
+
+    private class HeatmapPoint {
+        double intensity;
+        double weight;
+
+        HeatmapPoint(double intensity, double weight) {
+            this.intensity = intensity;
+            this.weight = weight;
+        }
+
     }
 }
