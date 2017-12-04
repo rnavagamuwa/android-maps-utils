@@ -510,7 +510,7 @@ public class WeightBasedHeatmapTileProvider implements TileProvider {
     }
 
     private double calculateIntensity(double distance) {
-        return Math.exp((-distance * distance) / (mRadius * mRadius / 3));
+        return -Math.pow(1.0/mRadius*distance, 2) + 1;
     }
 
     /**
